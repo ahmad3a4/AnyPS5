@@ -231,6 +231,28 @@ int GuestThreadCpuClockId(const PthreadPrivate* thread) {
     return static_cast<int>(CPU_CLOCK_BIT | static_cast<std::uint32_t>(thread->cpuClockThread));
 }
 
+bool GuestThreadAffinity(std::int64_t tid, KernelCpumask* mask) {
+    auto& registry = CpuClocks();
+    std::lock_guard lock(registry.lock);
+    for (const auto& [id, thread] : registry.threads) {
+        if (thread->tid != tid || thread->_finished.load(std::memory_order_acquire)) continue;
+        *mask = thread->affinity.load(std::memory_order_relaxed);
+        return true;
+    }
+    return false;
+}
+
+bool SetGuestThreadAffinity(std::int64_t tid, KernelCpumask mask) {
+    auto& registry = CpuClocks();
+    std::lock_guard lock(registry.lock);
+    for (const auto& [id, thread] : registry.threads) {
+        if (thread->tid != tid || thread->_finished.load(std::memory_order_acquire)) continue;
+        thread->affinity.store(mask, std::memory_order_relaxed);
+        return true;
+    }
+    return false;
+}
+
 void SetLiveGuestThreadsAffinity(KernelCpumask mask) {
     auto& registry = CpuClocks();
     std::lock_guard lock(registry.lock);

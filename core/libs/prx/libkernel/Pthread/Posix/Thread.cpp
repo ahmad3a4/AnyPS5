@@ -35,30 +35,30 @@ static constexpr int GUEST_ERANGE = 34;
 extern "C" {
 int* APS5_VABI __error_nid_postfix();
 int APS5_VABI scePthreadGetaffinity(Pthread thread, KernelCpumask* mask);
-int APS5_VABI scePthreadSetaffinity(Pthread thread, KernelCpumask mask);
 KernelCpumask APS5_VABI sceKernelGetAvailableCpumask(void);
 int APS5_VABI getpid_nid_postfix(void);
 
 int APS5_VABI cpuset_getaffinity_nid_postfix(int level, int which, std::int64_t id, std::size_t size, void* mask) {
     constexpr int LevelWhich = 3, WhichThread = 1, WhichProcess = 2;
-    constexpr int GuestEfault = 14, GuestErange = 34;
+    constexpr int GuestEsrch = 3, GuestEfault = 14, GuestErange = 34;
     constexpr std::size_t MaximumSize = 256 / 8;
     if (size < sizeof(KernelCpumask) || size > MaximumSize) {
         *__error_nid_postfix() = GuestErange;
         return -1;
     }
-    const bool thread = level == LevelWhich && which == WhichThread && id == -1;
+    const bool thread = level == LevelWhich && which == WhichThread;
     const bool process = level == LevelWhich && which == WhichProcess && (id == -1 || id == getpid_nid_postfix());
-    if (!thread && !process) NotImplemented_nid_no_patch("cpuset_getaffinity other than the calling thread or process");
+    if (!thread && !process) NotImplemented_nid_no_patch("cpuset_getaffinity other than a thread or the calling process");
+    const Pthread self = scePthreadSelf();
+    KernelCpumask affinity = 0;
+    if (process) affinity = LiveGuestThreadsAffinity();
+    else if (!GuestThreadAffinity(id == -1 ? self->tid : id, &affinity)) {
+        *__error_nid_postfix() = GuestEsrch;
+        return -1;
+    }
     if (!mask) {
         *__error_nid_postfix() = GuestEfault;
         return -1;
-    }
-    KernelCpumask affinity = 0;
-    if (thread) scePthreadGetaffinity(scePthreadSelf(), &affinity);
-    else {
-        scePthreadSelf();
-        affinity = LiveGuestThreadsAffinity();
     }
     std::memset(mask, 0, size);
     std::memcpy(mask, &affinity, sizeof(affinity));
@@ -67,7 +67,7 @@ int APS5_VABI cpuset_getaffinity_nid_postfix(int level, int which, std::int64_t 
 
 int APS5_VABI cpuset_setaffinity_nid_postfix(int level, int which, std::int64_t id, std::size_t size, const void* mask) {
     constexpr int LevelWhich = 3, WhichThread = 1, WhichProcess = 2;
-    constexpr int GuestEdeadlk = 11, GuestEfault = 14, GuestEinval = 22, GuestErange = 34;
+    constexpr int GuestEsrch = 3, GuestEdeadlk = 11, GuestEfault = 14, GuestEinval = 22, GuestErange = 34;
     constexpr std::size_t MaximumSize = 256 / 8;
     const auto fail = [](int error) {
         *__error_nid_postfix() = error;
@@ -79,15 +79,19 @@ int APS5_VABI cpuset_setaffinity_nid_postfix(int level, int which, std::int64_t 
     for (std::size_t index = sizeof(KernelCpumask); index < size; ++index) {
         if (bytes[index] != 0) return fail(GuestEinval);
     }
-    const bool thread = level == LevelWhich && which == WhichThread && id == -1;
+    const bool thread = level == LevelWhich && which == WhichThread;
     const bool process = level == LevelWhich && which == WhichProcess && (id == -1 || id == getpid_nid_postfix());
-    if (!thread && !process) NotImplemented_nid_no_patch("cpuset_setaffinity other than the calling thread or process");
+    if (!thread && !process) NotImplemented_nid_no_patch("cpuset_setaffinity other than a thread or the calling process");
     KernelCpumask requested = 0;
     std::memcpy(&requested, bytes, sizeof(requested));
+    if (requested == 0) return fail(GuestEdeadlk);
     const KernelCpumask affinity = requested & sceKernelGetAvailableCpumask();
+    const std::int64_t target = thread && id == -1 ? scePthreadSelf()->tid : id;
+    KernelCpumask current = 0;
+    if (thread && !GuestThreadAffinity(target, &current)) return fail(GuestEsrch);
     if (affinity == 0) return fail(GuestEdeadlk);
-    if (thread) scePthreadSetaffinity(scePthreadSelf(), affinity);
-    else SetLiveGuestThreadsAffinity(affinity);
+    if (thread && !SetGuestThreadAffinity(target, affinity)) return fail(GuestEsrch);
+    if (process) SetLiveGuestThreadsAffinity(affinity);
     return 0;
 }
 
